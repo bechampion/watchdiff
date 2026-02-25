@@ -12,6 +12,8 @@ No screen clearing, no full redraws. Just a clean stream of diffs with word-leve
 go install github.com/bechampion/watchdiff@latest
 ```
 
+Or grab a prebuilt binary from [releases](https://github.com/bechampion/watchdiff/releases).
+
 Or build from source:
 
 ```bash
