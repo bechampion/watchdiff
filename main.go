@@ -254,9 +254,23 @@ func main() {
 	frame := 0
 
 	spinTick := time.NewTicker(80 * time.Millisecond)
-	cmdTick := time.NewTicker(tick)
 	defer spinTick.Stop()
-	defer cmdTick.Stop()
+
+	// Run command in background so it never blocks the spinner
+	type cmdResult struct {
+		lines []string
+	}
+	resultCh := make(chan cmdResult, 1)
+
+	runAsync := func() {
+		go func() {
+			out := run(command)
+			resultCh <- cmdResult{lines: toLines(out)}
+		}()
+	}
+
+	// Schedule first run after interval
+	time.AfterFunc(tick, runAsync)
 
 	fmt.Printf("\r%s%s %swatching...%s", cyan, spinner[0], dim, reset)
 
@@ -271,9 +285,8 @@ func main() {
 			s := spinner[frame%len(spinner)]
 			fmt.Printf("\r%s%s %swatching...%s", cyan, s, dim, reset)
 
-		case <-cmdTick.C:
-			out := run(command)
-			curr := toLines(out)
+		case res := <-resultCh:
+			curr := res.lines
 
 			if prev != nil {
 				results := computeDiff(prev, curr)
@@ -301,6 +314,9 @@ func main() {
 			}
 
 			prev = curr
+
+			// Schedule next run
+			time.AfterFunc(tick, runAsync)
 		}
 	}
 }
