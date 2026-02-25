@@ -20,6 +20,7 @@ const (
 	greenBg  = "\033[1;97;42m"
 	dimRed   = "\033[91m"
 	dimGreen = "\033[92m"
+	gray     = "\033[90m"
 	reset    = "\033[0m"
 )
 
@@ -120,69 +121,98 @@ type diffResult struct {
 }
 
 func computeDiff(prev, curr []string) []diffResult {
-	var removed []string
-	tempPrev := make(map[string]int)
+	// Count prev line occurrences for matching unchanged lines
+	prevCount := make(map[string]int)
 	for _, line := range prev {
-		tempPrev[line]++
-	}
-	for _, line := range curr {
-		if tempPrev[line] > 0 {
-			tempPrev[line]--
-		}
-	}
-	for _, line := range prev {
-		if tempPrev[line] > 0 {
-			removed = append(removed, line)
-			tempPrev[line]--
-		}
+		prevCount[line]++
 	}
 
-	var added []string
-	tempCurr := make(map[string]int)
-	for _, line := range prev {
-		tempCurr[line]++
+	// Walk curr to classify each line as unchanged or added
+	type lineInfo struct {
+		line   string
+		status string // "unchanged" or "added"
 	}
-	for _, line := range curr {
-		if tempCurr[line] > 0 {
-			tempCurr[line]--
+	currInfo := make([]lineInfo, len(curr))
+
+	for i, line := range curr {
+		if prevCount[line] > 0 {
+			prevCount[line]--
+			currInfo[i] = lineInfo{line: line, status: "unchanged"}
 		} else {
-			added = append(added, line)
+			currInfo[i] = lineInfo{line: line, status: "added"}
 		}
 	}
 
-	var results []diffResult
-	usedAdded := make(map[int]bool)
+	// Remaining prev lines (prevCount > 0) are removed
+	// Rebuild removed list preserving prev order
+	prevCount2 := make(map[string]int)
+	for _, line := range prev {
+		prevCount2[line]++
+	}
+	for _, info := range currInfo {
+		if info.status == "unchanged" {
+			prevCount2[info.line]--
+		}
+	}
+	var removedLines []string
+	for _, line := range prev {
+		if prevCount2[line] > 0 {
+			removedLines = append(removedLines, line)
+			prevCount2[line]--
+		}
+	}
 
-	for _, rem := range removed {
-		bestIdx := -1
+	// Collect curr indices of added lines
+	var addedIndices []int
+	for i, info := range currInfo {
+		if info.status == "added" {
+			addedIndices = append(addedIndices, i)
+		}
+	}
+
+	// Pair removed lines with similar added lines
+	pairedAdded := make(map[int]int)   // curr index -> removedLines index
+	pairedRemoved := make(map[int]bool) // removedLines index -> used
+
+	for ri, rem := range removedLines {
+		bestCurrIdx := -1
 		bestSim := 0.4
-		for j, add := range added {
-			if usedAdded[j] {
+		for _, ci := range addedIndices {
+			if _, ok := pairedAdded[ci]; ok {
 				continue
 			}
-			sim := similarity(rem, add)
+			sim := similarity(rem, curr[ci])
 			if sim > bestSim {
 				bestSim = sim
-				bestIdx = j
+				bestCurrIdx = ci
 			}
 		}
+		if bestCurrIdx >= 0 {
+			pairedAdded[bestCurrIdx] = ri
+			pairedRemoved[ri] = true
+		}
+	}
 
-		if bestIdx >= 0 {
-			oldHighlighted, newHighlighted := wordDiff(rem, added[bestIdx])
-			results = append(results, diffResult{
-				kind:    "changed",
-				oldLine: oldHighlighted,
-				newLine: newHighlighted,
-			})
-			usedAdded[bestIdx] = true
-		} else {
+	// Build results: unpaired removed lines first, then curr in order
+	var results []diffResult
+
+	for ri, rem := range removedLines {
+		if !pairedRemoved[ri] {
 			results = append(results, diffResult{kind: "removed", line: rem})
 		}
 	}
 
-	for j, add := range added {
-		if !usedAdded[j] {
-			results = append(results, diffResult{kind: "added", line: add})
+	for i, info := range currInfo {
+		if info.status == "unchanged" {
+			results = append(results, diffResult{kind: "unchanged", line: info.line})
+		} else {
+			// Added line — check if paired with a removed line
+			if ri, ok := pairedAdded[i]; ok {
+				oldHL, newHL := wordDiff(removedLines[ri], info.line)
+				results = append(results, diffResult{kind: "changed", oldLine: oldHL, newLine: newHL})
+			} else {
+				results = append(results, diffResult{kind: "added", line: info.line})
+			}
 		}
 	}
 
@@ -195,6 +225,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, "  %s- removed%s\n", red, reset)
 	fmt.Fprintf(os.Stderr, "  %s+ added%s\n", green, reset)
 	fmt.Fprintf(os.Stderr, "  Changed words are %shighlighted%s\n", redBg, reset)
+	fmt.Fprintf(os.Stderr, "  %s~ unchanged%s\n", gray, reset)
 	fmt.Fprintf(os.Stderr, "\nOptions:\n")
 	fmt.Fprintf(os.Stderr, "  -n seconds   Interval between runs (default: 1, supports decimals like 0.5)\n")
 	fmt.Fprintf(os.Stderr, "\nExamples:\n")
@@ -291,7 +322,16 @@ func main() {
 			if prev != nil {
 				results := computeDiff(prev, curr)
 
-				if len(results) > 0 {
+				// Only print if there are actual changes (not just unchanged lines)
+				hasChanges := false
+				for _, r := range results {
+					if r.kind != "unchanged" {
+						hasChanges = true
+						break
+					}
+				}
+
+				if hasChanges {
 					fmt.Printf("\r\033[K")
 
 					now := time.Now().Format("15:04:05")
@@ -306,6 +346,8 @@ func main() {
 						case "changed":
 							fmt.Printf("  - %s\n", r.oldLine)
 							fmt.Printf("  + %s\n", r.newLine)
+						case "unchanged":
+							fmt.Printf("  %s~ %s%s\n", gray, r.line, reset)
 						}
 					}
 
