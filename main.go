@@ -143,22 +143,53 @@ func computeDiff(prev, curr []string) []diffResult {
 		}
 	}
 
-	// Remaining prev lines (prevCount > 0) are removed
-	// Rebuild removed list preserving prev order
-	prevCount2 := make(map[string]int)
-	for _, line := range prev {
-		prevCount2[line]++
-	}
+	// Count how many of each line were consumed as unchanged
+	consumedCount := make(map[string]int)
 	for _, info := range currInfo {
 		if info.status == "unchanged" {
-			prevCount2[info.line]--
+			consumedCount[info.line]++
 		}
 	}
+
+	// Walk prev to classify each line as unchanged or removed
+	// Mark the first N occurrences of each line as unchanged (matching curr consumption)
+	prevStatus := make([]string, len(prev))
+	prevConsumed := make(map[string]int)
+	for i, line := range prev {
+		if prevConsumed[line] < consumedCount[line] {
+			prevConsumed[line]++
+			prevStatus[i] = "unchanged"
+		} else {
+			prevStatus[i] = "removed"
+		}
+	}
+
+	// Collect removed lines with their prev indices
 	var removedLines []string
-	for _, line := range prev {
-		if prevCount2[line] > 0 {
-			removedLines = append(removedLines, line)
-			prevCount2[line]--
+	var removedPrevIndices []int
+	for i, status := range prevStatus {
+		if status == "removed" {
+			removedLines = append(removedLines, prev[i])
+			removedPrevIndices = append(removedPrevIndices, i)
+		}
+	}
+
+	// Map prev unchanged positions to curr positions (anchors)
+	prevUnchangedByLine := make(map[string][]int)
+	for i, status := range prevStatus {
+		if status == "unchanged" {
+			prevUnchangedByLine[prev[i]] = append(prevUnchangedByLine[prev[i]], i)
+		}
+	}
+	prevToCurrAnchor := make(map[int]int)
+	prevPosNext := make(map[string]int)
+	for i, info := range currInfo {
+		if info.status == "unchanged" {
+			line := info.line
+			idx := prevPosNext[line]
+			prevIdx := prevUnchangedByLine[line][idx]
+			prevPosNext[line] = idx + 1
+			prevToCurrAnchor[prevIdx] = i
 		}
 	}
 
@@ -171,7 +202,7 @@ func computeDiff(prev, curr []string) []diffResult {
 	}
 
 	// Pair removed lines with similar added lines
-	pairedAdded := make(map[int]int)   // curr index -> removedLines index
+	pairedAdded := make(map[int]int)    // curr index -> removedLines index
 	pairedRemoved := make(map[int]bool) // removedLines index -> used
 
 	for ri, rem := range removedLines {
@@ -193,26 +224,47 @@ func computeDiff(prev, curr []string) []diffResult {
 		}
 	}
 
-	// Build results: unpaired removed lines first, then curr in order
+	// Place unpaired removed lines at their original position
+	// Find the nearest unchanged anchor before each removed line in prev,
+	// then insert after that anchor's curr position
+	insertionMap := make(map[int][]string) // afterCurrIdx -> removed lines (-1 = before everything)
+	for ri := range removedLines {
+		if pairedRemoved[ri] {
+			continue
+		}
+		remPrevIdx := removedPrevIndices[ri]
+		afterCurr := -1
+		for j := remPrevIdx - 1; j >= 0; j-- {
+			if ci, ok := prevToCurrAnchor[j]; ok {
+				afterCurr = ci
+				break
+			}
+		}
+		insertionMap[afterCurr] = append(insertionMap[afterCurr], removedLines[ri])
+	}
+
+	// Build results: curr order with removed lines inserted at original positions
 	var results []diffResult
 
-	for ri, rem := range removedLines {
-		if !pairedRemoved[ri] {
-			results = append(results, diffResult{kind: "removed", line: rem})
-		}
+	// Removed lines that appeared before any anchor in prev
+	for _, line := range insertionMap[-1] {
+		results = append(results, diffResult{kind: "removed", line: line})
 	}
 
 	for i, info := range currInfo {
 		if info.status == "unchanged" {
 			results = append(results, diffResult{kind: "unchanged", line: info.line})
 		} else {
-			// Added line — check if paired with a removed line
 			if ri, ok := pairedAdded[i]; ok {
 				oldHL, newHL := wordDiff(removedLines[ri], info.line)
 				results = append(results, diffResult{kind: "changed", oldLine: oldHL, newLine: newHL})
 			} else {
 				results = append(results, diffResult{kind: "added", line: info.line})
 			}
+		}
+		// Insert any removed lines that belong after this position
+		for _, line := range insertionMap[i] {
+			results = append(results, diffResult{kind: "removed", line: line})
 		}
 	}
 
