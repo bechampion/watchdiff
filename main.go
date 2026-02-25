@@ -322,7 +322,10 @@ func main() {
 			if prev != nil {
 				results := computeDiff(prev, curr)
 
-				// Only print if there are actual changes (not just unchanged lines)
+				fmt.Printf("\r\033[K")
+
+				now := time.Now().Format("15:04:05")
+
 				hasChanges := false
 				for _, r := range results {
 					if r.kind != "unchanged" {
@@ -332,27 +335,26 @@ func main() {
 				}
 
 				if hasChanges {
-					fmt.Printf("\r\033[K")
-
-					now := time.Now().Format("15:04:05")
 					fmt.Printf("%s%s [%s]%s\n", dim, now, command, reset)
-
-					for _, r := range results {
-						switch r.kind {
-						case "removed":
-							fmt.Printf("  %s- %s%s\n", red, r.line, reset)
-						case "added":
-							fmt.Printf("  %s+ %s%s\n", green, r.line, reset)
-						case "changed":
-							fmt.Printf("  - %s\n", r.oldLine)
-							fmt.Printf("  + %s\n", r.newLine)
-						case "unchanged":
-							fmt.Printf("  %s~ %s%s\n", gray, r.line, reset)
-						}
-					}
-
-					fmt.Println()
+				} else {
+					fmt.Printf("%s%s [%s] (no changes)%s\n", gray, now, command, reset)
 				}
+
+				for _, r := range results {
+					switch r.kind {
+					case "removed":
+						fmt.Printf("  %s- %s%s\n", red, r.line, reset)
+					case "added":
+						fmt.Printf("  %s+ %s%s\n", green, r.line, reset)
+					case "changed":
+						fmt.Printf("  - %s\n", r.oldLine)
+						fmt.Printf("  + %s\n", r.newLine)
+					case "unchanged":
+						fmt.Printf("  %s~ %s%s\n", gray, r.line, reset)
+					}
+				}
+
+				fmt.Println()
 			}
 
 			prev = curr
